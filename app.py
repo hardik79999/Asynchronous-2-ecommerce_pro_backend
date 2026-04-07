@@ -1,0 +1,48 @@
+import os
+
+from flask import Flask
+from config import Config
+from shop.extensions import db, migrate, bcrypt, jwt, mail, cors
+
+
+def create_app(config_class=Config):
+    app = Flask(__name__)
+    
+    app.config.from_object(config_class)
+
+    # extensions initialize
+    db.init_app(app)
+    migrate.init_app(app, db)
+    bcrypt.init_app(app)
+    jwt.init_app(app)
+    mail.init_app(app)
+    cors.init_app(app)
+
+
+    from shop import models
+
+    # Blueprints Register
+    from shop.auth.routes import auth_bp
+    app.register_blueprint(auth_bp, url_prefix='/api/auth')
+
+    from shop.user.routes import user_bp
+    app.register_blueprint(user_bp, url_prefix='/api/user')
+
+    from shop.admin.routes import admin_bp
+    app.register_blueprint(admin_bp, url_prefix='/api/admin')
+    
+    from shop.seller.routes import seller_bp
+    app.register_blueprint(seller_bp, url_prefix='/api/seller')
+
+    @app.route('/')
+    def index():
+        return {"message": "E-Commerce Backend is Running Successfully!"}, 200
+
+    return app
+
+if __name__ == '__main__':
+    app = create_app()
+    host = os.environ.get('FLASK_HOST', '0.0.0.0')
+    port = int(os.environ.get('FLASK_PORT', 8000))
+    debug = os.environ.get('FLASK_DEBUG', 'True').lower() == 'true'
+    app.run(host=host, port=port, debug=debug)
