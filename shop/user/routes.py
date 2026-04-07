@@ -34,35 +34,78 @@ def get_profile():
 
 
 
+#================================================================================================================
+#================================================================================================================
+
+
+# @user_bp.route('/products', methods=['GET'])
+# def get_public_products():
+#     # MAGIC QUERY: Humne join pehle hi lagaya hua hai seller status check karne ke liye
+#     products = Product.query.join(User, Product.seller_id == User.id)\
+#         .filter(Product.is_active == True, User.is_active == True).all()
+    
+#     result = []
+#     for prod in products:
+#         # Har product ke specs nikal lo
+#         specs = [{"key": s.spec_key, "value": s.spec_value} for s in prod.specifications if s.is_active]
+        
+#         primary_image = ProductImage.query.filter_by(product_id=prod.id, is_primary=True).first()
+        
+#         result.append({
+#             "uuid": prod.uuid, 
+#             "name": prod.name,
+#             "price": prod.price,
+#             "category": prod.category.name,
+#             "seller": prod.seller_user.username, 
+#             "primary_image": primary_image.image_url if primary_image else None,
+#             "specifications": specs # 👈 List view me bhi specs add kar diye
+#         })
+        
+#     return jsonify({
+#         "total_products": len(result),
+#         "products": result
+#     }), 200
+
+from sqlalchemy.orm import joinedload
 
 @user_bp.route('/products', methods=['GET'])
 def get_public_products():
-    # MAGIC QUERY: Humne join pehle hi lagaya hua hai seller status check karne ke liye
-    products = Product.query.join(User, Product.seller_id == User.id)\
-        .filter(Product.is_active == True, User.is_active == True).all()
-    
+
+    products = Product.query.options(
+        joinedload(Product.category),
+        joinedload(Product.seller_user),
+        joinedload(Product.images),   # 👈 relation hona chahiye
+        joinedload(Product.specifications)
+    ).join(User, Product.seller_id == User.id)\
+     .filter(Product.is_active == True, User.is_active == True).all()
+
     result = []
+
     for prod in products:
-        # Har product ke specs nikal lo
-        specs = [{"key": s.spec_key, "value": s.spec_value} for s in prod.specifications if s.is_active]
-        
-        primary_image = ProductImage.query.filter_by(product_id=prod.id, is_primary=True).first()
-        
+        primary_image = next(
+            (img.image_url for img in prod.images if img.is_primary),
+            None
+        )
+
+        specs = [
+            {"key": s.spec_key, "value": s.spec_value}
+            for s in prod.specifications if s.is_active
+        ]
+
         result.append({
             "uuid": prod.uuid,
             "name": prod.name,
             "price": prod.price,
             "category": prod.category.name,
-            "seller": prod.seller_user.username, 
-            "primary_image": primary_image.image_url if primary_image else None,
-            "specifications": specs # 👈 List view me bhi specs add kar diye
+            "seller": prod.seller_user.username,
+            "primary_image": primary_image,
+            "specifications": specs
         })
-        
+
     return jsonify({
         "total_products": len(result),
         "products": result
     }), 200
-
 
 
 
@@ -142,22 +185,59 @@ def add_to_cart(current_customer):
         return jsonify({"error": "Failed to add to cart", "details": str(e)}), 500
 
 
+# @user_bp.route('/cart', methods=['GET'])
+# @customer_required
+# def view_cart(current_customer):
+#     # 👈 Sirf wo items lao jo is_active=True hain
+#     cart_items = CartItem.query.filter_by(user_id=current_customer.id, is_active=True).all()
+    
+#     result = []
+#     cart_total = 0
+    
+#     for item in cart_items:
+#         primary_image = ProductImage.query.filter_by(product_id=item.product.id, is_primary=True).first()
+#         img_url = primary_image.image_url if primary_image else None
+        
+#         item_total = item.product.price * item.quantity
+#         cart_total += item_total
+        
+#         result.append({
+#             "cart_item_uuid": item.uuid,
+#             "product_name": item.product.name,
+#             "product_uuid": item.product.uuid,
+#             "price": item.product.price,
+#             "quantity": item.quantity,
+#             "item_total": item_total,
+#             "image": img_url
+#         })
+        
+#     return jsonify({
+#         "cart_total": cart_total,
+#         "items": result
+#     }), 200
+
+
+
 @user_bp.route('/cart', methods=['GET'])
 @customer_required
 def view_cart(current_customer):
-    # 👈 Sirf wo items lao jo is_active=True hain
-    cart_items = CartItem.query.filter_by(user_id=current_customer.id, is_active=True).all()
-    
+
+    cart_items = CartItem.query.options(
+        joinedload(CartItem.product).joinedload(Product.images)
+    ).filter_by(user_id=current_customer.id, is_active=True).all()
+
     result = []
     cart_total = 0
-    
+
     for item in cart_items:
-        primary_image = ProductImage.query.filter_by(product_id=item.product.id, is_primary=True).first()
-        img_url = primary_image.image_url if primary_image else None
-        
+        primary_image = next(
+            (img.image_url for img in item.product.images if img.is_primary),
+            None
+        )
+
         item_total = item.product.price * item.quantity
         cart_total += item_total
-        
+
         result.append({
             "cart_item_uuid": item.uuid,
             "product_name": item.product.name,
@@ -165,9 +245,9 @@ def view_cart(current_customer):
             "price": item.product.price,
             "quantity": item.quantity,
             "item_total": item_total,
-            "image": img_url
+            "image": primary_image
         })
-        
+
     return jsonify({
         "cart_total": cart_total,
         "items": result
@@ -218,36 +298,124 @@ def add_address(current_customer):
 
 from shop.models import Order, OrderItem
 
+# @user_bp.route('/checkout', methods=['POST'])
+# @customer_required
+# def checkout(current_customer):
+#     data = request.get_json()
+#     address_uuid = data.get('address_uuid')
+    
+#     address = Address.query.filter_by(uuid=address_uuid, user_id=current_customer.id).first()
+#     if not address:
+#         return jsonify({"error": "Invalid delivery address"}), 404
+        
+#     # 👈 Sirf active cart items ko checkout process me lo
+#     cart_items = CartItem.query.filter_by(user_id=current_customer.id, is_active=True).all()
+#     if not cart_items:
+#         return jsonify({"error": "Cart is empty"}), 400
+        
+#     total_amount = 0
+#     order_items_to_create = []
+
+#     try:
+#         for item in cart_items:
+#             if item.product.stock < item.quantity:
+#                 return jsonify({"error": f"Product {item.product.name} out of stock!"}), 400
+            
+#             item_total = item.product.price * item.quantity
+#             total_amount += item_total
+            
+#             order_items_to_create.append({
+#                 "product_id": item.product.id,
+#                 "quantity": item.quantity,
+#                 "price_at_purchase": item.product.price
+#             })
+
+#         new_order = Order(
+#             user_id=current_customer.id,
+#             address_id=address.id,
+#             total_amount=total_amount,
+#             status='pending',
+#             created_by=current_customer.id, # 👈 Audit Trail
+#             updated_by=current_customer.id  # 👈 Audit Trail
+#         )
+#         db.session.add(new_order)
+#         db.session.flush()
+
+#         for oi in order_items_to_create:
+#             order_item = OrderItem(
+#                 order_id=new_order.id,
+#                 product_id=oi['product_id'],
+#                 quantity=oi['quantity'],
+#                 price_at_purchase=oi['price_at_purchase'],
+#                 created_by=current_customer.id, # 👈 Audit Trail
+#                 updated_by=current_customer.id  # 👈 Audit Trail
+#             )
+#             db.session.add(order_item)
+            
+#             prod = Product.query.get(oi['product_id'])
+#             prod.stock -= oi['quantity']
+
+#         # 🚀 SOFT DELETE LOGIC (Hard delete hata diya)
+#         for item in cart_items:
+#             item.is_active = False # 👈 Soft Delete
+#             item.updated_by = current_customer.id # Kisne delete kiya
+        
+#         db.session.commit()
+        
+#         return jsonify({
+#             "message": "Order placed successfully!",
+#             "order_uuid": new_order.uuid,
+#             "total_payable": total_amount
+#         }), 201
+
+#     except Exception as e:
+#         db.session.rollback()
+#         return jsonify({"error": "Transaction failed", "details": str(e)}), 500
+
+
+
+from sqlalchemy.orm import joinedload
+
 @user_bp.route('/checkout', methods=['POST'])
 @customer_required
 def checkout(current_customer):
+
     data = request.get_json()
     address_uuid = data.get('address_uuid')
-    
-    address = Address.query.filter_by(uuid=address_uuid, user_id=current_customer.id).first()
+
+    address = Address.query.filter_by(
+        uuid=address_uuid,
+        user_id=current_customer.id
+    ).first()
+
     if not address:
         return jsonify({"error": "Invalid delivery address"}), 404
-        
-    # 👈 Sirf active cart items ko checkout process me lo
-    cart_items = CartItem.query.filter_by(user_id=current_customer.id, is_active=True).all()
+
+    cart_items = CartItem.query.options(
+        joinedload(CartItem.product)
+    ).filter_by(user_id=current_customer.id, is_active=True).all()
+
     if not cart_items:
         return jsonify({"error": "Cart is empty"}), 400
-        
+
     total_amount = 0
     order_items_to_create = []
 
     try:
         for item in cart_items:
-            if item.product.stock < item.quantity:
-                return jsonify({"error": f"Product {item.product.name} out of stock!"}), 400
-            
-            item_total = item.product.price * item.quantity
+
+            product = item.product  # 👈 no extra query
+
+            if product.stock < item.quantity:
+                return jsonify({"error": f"{product.name} out of stock"}), 400
+
+            item_total = product.price * item.quantity
             total_amount += item_total
-            
+
             order_items_to_create.append({
-                "product_id": item.product.id,
+                "product": product,
                 "quantity": item.quantity,
-                "price_at_purchase": item.product.price
+                "price": product.price
             })
 
         new_order = Order(
@@ -255,33 +423,33 @@ def checkout(current_customer):
             address_id=address.id,
             total_amount=total_amount,
             status='pending',
-            created_by=current_customer.id, # 👈 Audit Trail
-            updated_by=current_customer.id  # 👈 Audit Trail
+            created_by=current_customer.id,
+            updated_by=current_customer.id
         )
         db.session.add(new_order)
         db.session.flush()
 
         for oi in order_items_to_create:
+            product = oi["product"]
+
             order_item = OrderItem(
                 order_id=new_order.id,
-                product_id=oi['product_id'],
-                quantity=oi['quantity'],
-                price_at_purchase=oi['price_at_purchase'],
-                created_by=current_customer.id, # 👈 Audit Trail
-                updated_by=current_customer.id  # 👈 Audit Trail
+                product_id=product.id,
+                quantity=oi["quantity"],
+                price_at_purchase=oi["price"],
+                created_by=current_customer.id,
+                updated_by=current_customer.id
             )
             db.session.add(order_item)
-            
-            prod = Product.query.get(oi['product_id'])
-            prod.stock -= oi['quantity']
 
-        # 🚀 SOFT DELETE LOGIC (Hard delete hata diya)
+            product.stock -= oi["quantity"]  # 👈 no query
+
         for item in cart_items:
-            item.is_active = False # 👈 Soft Delete
-            item.updated_by = current_customer.id # Kisne delete kiya
-        
+            item.is_active = False
+            item.updated_by = current_customer.id
+
         db.session.commit()
-        
+
         return jsonify({
             "message": "Order placed successfully!",
             "order_uuid": new_order.uuid,
@@ -290,7 +458,8 @@ def checkout(current_customer):
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Transaction failed", "details": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
+
 #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 import random
